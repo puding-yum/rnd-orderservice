@@ -1,0 +1,26 @@
+# Native image: GraalVM compiles the app to one executable, no JVM at run time
+# Build context = the orderservice project root (GitHub Actions and lab/compose.yaml)
+# Needs a machine with ~16 GB RAM (built on GitHub Actions): with a 4 GB compiler heap it ran out of memory after ~20 min.
+#
+# GraalVM 25 even though the app targets Java 21: the GraalVM image for Java 21 is too old
+# for the native plugin used by Spring Boot 4.2 ("reachability-metadata schema" error).
+
+# ---- Stage 1: build the native executable ----
+FROM ghcr.io/graalvm/native-image-community:25 AS build
+# Slim Oracle Linux base: the Maven wrapper needs xargs (findutils) and unzip/tar
+RUN microdnf install -y findutils tar gzip unzip && microdnf clean all
+WORKDIR /src
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN chmod +x mvnw
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q dependency:go-offline
+COPY src ./src
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q -Pnative native:compile -DskipTests
+
+# ---- Stage 2: tiny runtime (only glibc, certificates, timezone data) ----
+FROM gcr.io/distroless/base-debian12:nonroot
+WORKDIR /app
+# The executable is named after the artifactId: orderservice
+COPY --from=build /src/target/orderservice /app/orderservice
+EXPOSE 8080
+ENTRYPOINT ["/app/orderservice"]
